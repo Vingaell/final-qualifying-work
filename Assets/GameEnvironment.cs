@@ -39,6 +39,10 @@ namespace ConsoleGameLibrary
 
         public byte CurrentPlayer => board.currentPlayer;
 
+        private int _lastAgentX = 0;
+        private int _lastAgentY = 0;
+
+
         // private double lastRewardValue = 0.0;
 
         public Dictionary<string, object> metadata = new Dictionary<string, object>
@@ -337,9 +341,14 @@ namespace ConsoleGameLibrary
                 );
             }
 
+            _lastAgentX = move.X;
+            _lastAgentY = move.Y;
+
+            float Reward = (float)LocalReward(_lastAgentX, _lastAgentY);
+
             return (
                 new double[9, 9, 18],
-                -0.00f,
+                Reward,
                 false,                    
                 false,
                 GetInfo()
@@ -398,9 +407,178 @@ namespace ConsoleGameLibrary
 
         // ===================== Награда =====================
 
+        private double LocalReward(int x, int y) {
+
+            double reward = -0.02;
+            double potential_reward = 0;
+            bool idiot = false;
+
+            for (int i = x - 1; i < x + 2; i++) {
+                for (int j = y - 1; j < y + 2; j++) {
+
+                    int a = 0;
+                    int f3 = 0;
+                    int f4 = 0;
+                    int f_border = 0;
+
+                    if (board.Cells[i, j].CurrentShape != null) {
+                        for (int i1 = i - 1; i1 < i + 2; ++i1) {
+                            for (int j1 = j - 1; j1 < j + 2; ++j1) {
+                                if (board.Cells[i1, j1].CurrentShape != null && !(i1 == i && j1 == j)) {
+                                    a++;
+                                    switch (board.Cells[i1, j1].CurrentShape.Type.BaseType)
+                                    {
+                                        case 2: f4++; break;
+                                        case 1: f3++; break;
+                                        case 5: f_border++; break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (a > 0) {
+
+                            var shape = board.Cells[i, j].CurrentShape;
+                            bool isOwn = shape.player == agentPlayer;
+
+                            if (shape.Type.BaseType == 1) {
+                                if (isOwn) {
+
+                                    if (f3 < 4 && 8 - a >= 3 - f3)  potential_reward += (0.1 - 0.01*f_border) * ((f4 + f_border) / 5.0 * (f3 / 3.0));
+
+                                    // бонус за создание сильной структуры и штраф за ее не создание.
+                                    if (a == 6 && f3 == 2) reward += 0.15;
+                                    if (f3 == 1 && a == 6 && board.Cells[x, y].CurrentShape.Type.BaseType != 1) reward -= 0.1;
+
+                                    // штрафы за порчу своей области
+                                    if (f3 == 2 && a == 8 && board.Cells[x, y].CurrentShape.Type.BaseType != 1) idiot = true; 
+                                    if (f3 == 1 && a == 7 && board.Cells[x, y].CurrentShape.Type.BaseType != 1) reward -= 0.1;
+                                    if (f3 == 0 && a == 6 && board.Cells[x, y].CurrentShape.Type.BaseType != 1) {
+                                        if (f_border != 5) reward -=0.05;
+                                    }
+
+                                    if (f3 == 4 && board.Cells[x, y].CurrentShape.Type.BaseType == 1) {
+                                        if (a == 8) idiot = true; // упускаем победу в 1 ход
+                                        else if (a == 7) reward -= 0.12;
+                                        else reward -= 0.08;
+                                    }
+                                }
+
+                                else {
+
+                                    if (f3 < 4 && 8 - a >= 3 - f3)  potential_reward -= (0.08 - 0.008*f_border) * ((f4 + f_border) / 5.0 * (f3 / 3.0));
+
+                                    // штрафы за создание сильной структуры сопернику и бонус за ее поломку
+                                    if (a == 6 && f3 == 2) reward -= 0.1;
+                                    if (f3 == 1 && a == 6 && board.Cells[x, y].CurrentShape.Type.BaseType != 1) reward += 0.1;
+
+                                    // Очень сильный штраф за закрытие области сопернику
+                                    if (f3 == 3 && a == 8) {
+                                        reward -= 0.8;
+                                        idiot = true;
+                                    }
+
+                                    // Очень сильный штраф за создание ситуции, когда соперник побеждает в один ход
+                                    if (a == 7 && (f3 == 2 || f3 == 3)) {
+                                        reward -= 0.6;
+                                        idiot = true;
+                                    }
+
+                                    // Бонусы за порчу области соперника. Чем позже сломали, тем лучше
+                                    if (f3 == 2 && a == 8 && board.Cells[x, y].CurrentShape.Type.BaseType != 1) reward += 0.25; 
+                                    if (f3 == 1 && a == 7 && board.Cells[x, y].CurrentShape.Type.BaseType != 1) reward += 0.15;
+                                    if (f3 == 0 && a == 6 && board.Cells[x, y].CurrentShape.Type.BaseType != 1) reward += 0.1;
+
+                                    if (f3 == 4 && board.Cells[x, y].CurrentShape.Type.BaseType == 1) {
+                                        if (a == 8) reward += 0.25; 
+                                        else if (a == 7) reward += 0.15;
+                                        else reward += 0.1;
+                                    }
+
+
+                                }
+                            }
+
+                            if (shape.Type.BaseType == 2) {
+                                if (isOwn) {
+                                    if (f4 < 5 && 8 - a >= 4 - f4)  potential_reward += (0.1 - 0.01*f_border) * ((f3 + f_border) / 4.0 * (f4 / 4.0));
+
+                                    // бонус за создание сильной структуры и штраф за ее не создание.
+                                    if (a == 6 && f4 == 3) reward += 0.15;
+                                    if (f4 == 2 && a == 6 && board.Cells[x, y].CurrentShape.Type.BaseType != 2) reward -= 0.1;
+
+                                    // штрафы за порчу своей области
+                                    if (f4 == 3 && a == 8 && board.Cells[x, y].CurrentShape.Type.BaseType != 2) idiot = true; 
+                                    if (f4 == 2 && a == 7 && board.Cells[x, y].CurrentShape.Type.BaseType != 2) reward -= 0.1;
+                                    if (f4 == 1 && a == 6 && board.Cells[x, y].CurrentShape.Type.BaseType != 2) {
+                                        if (f_border != 5) reward -=0.05;
+                                    }
+
+                                    if (f4 == 5 && board.Cells[x, y].CurrentShape.Type.BaseType == 2) {
+                                        if (a == 8) idiot = true; // упускаем победу в 1 ход
+                                        else if (a == 7) reward -= 0.12;
+                                        else reward -= 0.08;
+                                    }
+                                }
+
+                                else {
+                                    
+                                    if (f4 < 5 && 8 - a >= 4 - f4)  potential_reward -= (0.08 - 0.008*f_border) * ((f3 + f_border) / 4.0 * (f4 / 4.0));
+
+                                    // штрафы за создание сильной структуры сопернику и бонус за ее поломку
+                                    if (a == 6 && f4 == 3) reward -= 0.1;
+                                    if (f4 == 2 && a == 6 && board.Cells[x, y].CurrentShape.Type.BaseType != 2) reward += 0.1;
+
+                                    // Очень сильный штраф за закрытие области сопернику
+                                    if (f4 == 4 && a == 8) {
+                                        reward -= 0.8;
+                                        idiot = true;
+                                    }
+
+                                    // Очень сильный штраф за создание ситуции, когда соперник побеждает в один ход
+                                    if (a == 7 && (f4 == 3 || f4 == 4)) {
+                                     reward -= 0.6;
+                                     idiot = true;
+                                    }
+
+                                    // Бонусы за порчу области соперника. Чем позже сломали, тем лучше
+                                    if (f4 == 3 && a == 8 && board.Cells[x, y].CurrentShape.Type.BaseType != 2) reward += 0.25; 
+                                    if (f4 == 2 && a == 7 && board.Cells[x, y].CurrentShape.Type.BaseType != 2) reward += 0.15;
+                                    if (f4 == 1 && a == 6 && board.Cells[x, y].CurrentShape.Type.BaseType != 2) reward += 0.1;
+                                    if (f4 == 0 && a == 5 && board.Cells[x, y].CurrentShape.Type.BaseType != 2) reward += 0.05;
+
+                                    if (f4 == 5 && board.Cells[x, y].CurrentShape.Type.BaseType == 2) {
+                                        if (a == 8) reward += 0.25; 
+                                        else if (a == 7) reward += 0.15;
+                                        else reward += 0.1;
+                                    }
+
+                                }
+                            }
+
+
+                        }
+
+                    }
+
+                }
+            }
+
+            reward = Math.Clamp(reward, -0.3, 0.3);
+
+            potential_reward = Math.Clamp(potential_reward, -0.2, 0.2);
+
+            reward += potential_reward;
+
+            if (idiot == true) reward -= 0.3;
+
+            return reward;
+        }
+
+
         private double CalculateReward(int x, int y)
         {
-            double reward = -0.02;
+            double reward = 0.00;
 
             if (IsGameOver())
             {

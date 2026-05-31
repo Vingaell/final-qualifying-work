@@ -143,28 +143,62 @@ public class OnnxModelRunner : IDisposable
                     logits[i] = -10000f;
             }
 
-            // ARGMAX
-            int bestAction = -1;
-            float bestValue = float.MinValue;
+            // ===================== SOFTMAX =====================
+            float maxLogit = logits.Max();
+            float sumExp = 0f;
+
+            float[] probs = new float[logits.Length];
 
             for (int i = 0; i < logits.Length; i++)
             {
-                if (logits[i] > bestValue)
+                probs[i] = Mathf.Exp(logits[i] - maxLogit);
+                sumExp += probs[i];
+            }
+
+            for (int i = 0; i < probs.Length; i++)
+            {
+                probs[i] /= sumExp;
+            }
+
+            // ===================== FILTER + LOG =====================
+            List<int> candidates = new List<int>();
+
+            Debug.Log("[ONNX Predict] Candidate actions:");
+
+            for (int i = 0; i < probs.Length; i++)
+            {
+                if (i < mask.Length && mask[i] && probs[i] > 0.03f)
                 {
-                    bestValue = logits[i];
-                    bestAction = i;
+                    candidates.Add(i);
+                    Debug.Log($"Action {i} | prob = {probs[i]:F4}");
                 }
             }
 
-            if (bestAction == -1)
+            // fallback если всё отфильтровалось
+            if (candidates.Count == 0)
             {
-                Debug.LogWarning("[ONNX] После маскирования нет действий!");
-                return null;
+                int maxIdx = 0;
+                float maxP = -1f;
+
+                for (int i = 0; i < probs.Length; i++)
+                {
+                    if (i < mask.Length && mask[i] && probs[i] > maxP)
+                    {
+                        maxP = probs[i];
+                        maxIdx = i;
+                    }
+                }
+
+                candidates.Add(maxIdx);
             }
 
-            Debug.Log($"[ONNX Predict] Bot выбрал действие #{bestAction}");
+            // ===================== SAMPLING =====================
+            int chosen = candidates[UnityEngine.Random.Range(0, candidates.Count)];
 
-            return _gameEnv.DecodeAction(bestAction);
+            Debug.Log($"[ONNX Predict] Bot chose action #{chosen} (prob={probs[chosen]:F4})");
+
+            return _gameEnv.DecodeAction(chosen);
+
         }
         catch (Exception e)
         {

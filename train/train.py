@@ -19,9 +19,9 @@ from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
 from stable_baselines3.common.logger import configure
 
-# гиперпараметры
+# Гиперпараметры
 
-TOTAL_EPISODES = 12000
+TOTAL_EPISODES = 15000
 LEARNING_RATE = 3e-4
 N_STEPS = 2048
 BATCH_SIZE = 512
@@ -29,15 +29,42 @@ N_EPOCHS = 10
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_RANGE = 0.2
-ENT_COEF = 0.05
+ENT_COEF = 0.04
+ENT_COEF_END = 0.005
 
 PRINT_EVERY = 25
-SAVE_EVERY = 50
+SAVE_EVERY = 100
 
 # ТУРНИР 
 WARMUP_EPISODES = 150
 GAMES_PER_PAIR = 50
-MAX_POOL_SIZE = 10
+MAX_POOL_SIZE = 13
+
+# ==================== Продолжение обучения ====================
+RESUME_TRAINING = True
+
+RESUME_FROM_EPISODE = 8701
+
+MAIN_MODEL_EPISODE = 8650
+
+TOP_MODELS = [
+    8650,
+    8350,
+    8600,
+    5550,
+    4400,
+    28601
+]
+
+PROBLEMATIC_MODELS = [
+    8550,
+    8450,
+    6400,
+    3200
+]
+
+
+# =================================== LOAD DLL =====================================
 
 dll_path = r"D:\diplom\Bob1\ConsoleGameLibrary\bin\Debug\netstandard2.1\ConsoleGameLibrary.dll"
 
@@ -49,12 +76,12 @@ GameEnvironmentType = assembly.GetType("ConsoleGameLibrary.GameEnvironment")
 
 current_opponent_model = None
 historical_models = {}      
-pool_models = []            # список моделей в пуле 
+pool_models = []            # список моделей в пуле (до 10)
 elo_ratings = {}            
 model_names = {}            
 problematic_models = []     # 2 проблемные модели
 
-# GYM WRAPPER
+# =========================== GYM WRAPPER ===============================
 
 class GameEnvWrapper(gym.Env):
     def __init__(self):                    
@@ -119,7 +146,9 @@ class GameEnvWrapper(gym.Env):
         action = int(action)
         agent_player = int(self.env.agentPlayer)
 
-        self.env.AgentStep(action)
+        agent_result = self.env.AgentStep(action)
+
+        agent_reward = float(agent_result.Item2)
 
         opp_player = 3 - agent_player
         opp_obs = self.get_observation_for_player(opp_player)
@@ -140,7 +169,7 @@ class GameEnvWrapper(gym.Env):
                 result = self.env.OpponentStep(0)
 
         obs = self.get_observation_for_player(agent_player)
-        reward = float(result.Item2)
+        reward = agent_reward + float(result.Item2)
         terminated = bool(result.Item3)
         truncated = bool(result.Item4)
         info = dict(result.Item5)
@@ -184,83 +213,149 @@ def load_random_old_model(models_dir, existing_names):
 def normalize_name(name: str):
     return name.replace("ppo_model_", "").replace(".zip", "")
 
-# TRAIN 
+# =================== TRAIN =================
 
 def train():
     print("Создаём окружение...")
     env = create_env()
+    
+    global historical_models
+    global pool_models
+    global elo_ratings
+    global problematic_models
+    global model_names
 
     log_dir = "./sb3_logs"
     models_dir = "./models"
+    elo_log_dir = "./elo_match_logs"
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(models_dir, exist_ok=True)
+    os.makedirs(elo_log_dir, exist_ok=True)
 
     new_logger = configure(log_dir, ["stdout", "csv"])
 
-    model = MaskablePPO(
-        MaskableActorCriticPolicy,
-        env,
-        learning_rate=LEARNING_RATE,
-        n_steps=N_STEPS,
-        batch_size=BATCH_SIZE,
-        n_epochs=N_EPOCHS,
-        gamma=GAMMA,
-        gae_lambda=GAE_LAMBDA,
-        clip_range=CLIP_RANGE,
-        ent_coef=ENT_COEF,
-        verbose=1,
-        device="cuda",
-        tensorboard_log="./ppo_shape_tensorboard/"
-    )
+    if RESUME_TRAINING:
+
+        model_path = os.path.join(
+            models_dir,
+            f"ppo_model_{MAIN_MODEL_EPISODE}.zip"
+        )
+
+        model = MaskablePPO.load(model_path, env=env)
+
+    else:
+
+        model = MaskablePPO(
+            MaskableActorCriticPolicy,
+            env,
+            learning_rate=LEARNING_RATE,
+            n_steps=N_STEPS,
+            batch_size=BATCH_SIZE,
+            n_epochs=N_EPOCHS,
+            gamma=GAMMA,
+            gae_lambda=GAE_LAMBDA,
+            clip_range=CLIP_RANGE,
+            ent_coef=ENT_COEF,
+            verbose=1,
+            device="cuda",
+            tensorboard_log="./ppo_shape_tensorboard/"
+        )
+        
+        
+    if RESUME_TRAINING:
+
+        print("=== RESUME TRAINING ENABLED ===")
+
+        # Лучшие модели
+        for ep in TOP_MODELS:
+
+            path = os.path.join(
+                models_dir,
+                f"ppo_model_{ep}.zip"
+            )
+
+            loaded_model = MaskablePPO.load(path)
+
+            historical_models[ep] = loaded_model
+            model_names[loaded_model] = f"ppo_model_{ep}"
+
+            pool_models.append(loaded_model)
+
+        # Проблемные модели
+        for ep in PROBLEMATIC_MODELS:
+
+            path = os.path.join(
+                models_dir,
+                f"ppo_model_{ep}.zip"
+            )
+
+            loaded_model = MaskablePPO.load(path)
+
+            historical_models[ep] = loaded_model
+            model_names[loaded_model] = f"ppo_model_{ep}"
+
+            problematic_models.append(loaded_model)
+
+            if loaded_model not in pool_models:
+                pool_models.append(loaded_model)    
 
     model.set_logger(new_logger)
 
     previous_model = None
-    historical_models = {}
-    pool_models = []
-    elo_ratings = {}
-    problematic_models = []
 
     print("Начало обучения...\n")
 
-    custom_log = open(os.path.join(log_dir, "sb3_custom_log.txt"), "w", encoding="utf-8")
-    progress_log = open(os.path.join(log_dir, "training_progress.txt"), "w", encoding="utf-8")
-    pairwise_log = open(os.path.join(log_dir, "pairwise_results.txt"), "w", encoding="utf-8")
+    custom_log = open(os.path.join(log_dir, "sb3_custom_log.txt"), "a", encoding="utf-8")
+    progress_log = open(os.path.join(log_dir, "training_progress.txt"), "a", encoding="utf-8")
+    pairwise_log = open(os.path.join(log_dir, "pairwise_results.txt"), "a", encoding="utf-8")
     
     try:
-        for episode in range(0, TOTAL_EPISODES):
+        start_episode = 0
 
-            # ВЫБОР ОППОНЕНТА
+        if RESUME_TRAINING:
+            start_episode = RESUME_FROM_EPISODE
+
+        for episode in range(start_episode, TOTAL_EPISODES):     
+                      
+            progress = episode / TOTAL_EPISODES
+
+            current_ent_coef = ENT_COEF + (ENT_COEF_END - ENT_COEF) * progress
+
+            model.ent_coef = current_ent_coef
+
+            # Выбор противника
             if episode < WARMUP_EPISODES:
                 env.set_random_opponent()
             else:
                 pos = episode % SAVE_EVERY
-                if pos < 12:                                    # 12 self-play
+                if pos < 10:                                    # 20 self-play
                     env.set_opponent(model)
-                elif pos < 26:                                  # 14 vs Top
+                elif pos < 14:                                  # 4 fully random
+                    env.set_random_opponent()
+                elif pos < 44:                                  # 30 vs Top
                     if pool_models:
                         env.set_opponent(random.choice(pool_models[:6]))
                     else:
                         env.set_opponent(model)
-                elif pos < 38:                                  # 14 vs problematic
+                elif pos < 80:                                  # 30 vs problematic
                     if pool_models:
                         env.set_opponent(random.choice(problematic_models))
                     else:
                         env.set_opponent(model)
-                elif pos < 46:                                  # 8 random from pool
+                elif pos < 90:                                  # 11 random from pool
                     if pool_models:
                         env.set_opponent(random.choice(pool_models))
                     else:
                         env.set_opponent(model)
-                else:                                           # 4 fully random
-                    env.set_random_opponent()
+                else:                               # 5 self-play            
+                    env.set_opponent(model)      
 
             model.learn(total_timesteps=N_STEPS, reset_num_timesteps=False)
 
             if episode % PRINT_EVERY == 0:
                 print(f"Episode {episode} завершён")
 
-            # СОХРАНЕНИЕ + ТУРНИР 
+            # ==================== СОХРАНЕНИЕ + ТУРНИР ====================
             if episode % SAVE_EVERY == 0 and episode > 0:
                 save_path = os.path.join(models_dir, f"ppo_model_{episode}.zip")
                 model.save(save_path)
@@ -274,20 +369,30 @@ def train():
                 historical_models[episode] = previous_model
                 model_names[previous_model] = f"ppo_model_{episode}"
 
-                # ТУРНИР 
+                # ==================== ТУРНИР ====================
                 print(f"Проведение турнира после эпизода {episode}...")
                 tournament_start = time.time()
+                
+                elo_match_log_path = os.path.join(
+                    elo_log_dir,
+                    f"elo_matches_{episode}.txt"
+                )
 
-                # ТУРНИРНЫЙ ПУЛ 
+                elo_match_log = open(elo_match_log_path, "a", encoding="utf-8")
+
+                # ==================== ТУРНИРНЫЙ ПУЛ ====================
 
                 if pool_models:
-                    current_pool = list(pool_models)
+                    if len(pool_models) >= MAX_POOL_SIZE:
+                        current_pool = list(pool_models[:-1])
+                    else:
+                        current_pool = list(pool_models)
                 else:
                     # первый турнир
                     current_pool = list(historical_models.values())
 
                 # текущая модель обязана участвовать
-                current_pool.insert(0, previous_model)
+                current_pool.append(previous_model)
 
                 # удаляем дубликаты по имени модели
                 unique_pool = []
@@ -307,11 +412,11 @@ def train():
                 elo_ratings = {m: 1500.0 for m in current_pool}
 
                 tournament_log = []
-                K = 32  # коэффициент Elo
+                K = 2  # коэффициент Elo
                 
                 results_matrix = {}
 
-                # ПРОВЕДЕНИЕ ТУРНИРА
+                # ==================== ПРОВЕДЕНИЕ ТУРНИРА С ELO ====================
                 for round_num in range(GAMES_PER_PAIR):
                     for i in range(len(current_pool)):
                         for j in range(i + 1, len(current_pool)):
@@ -320,7 +425,7 @@ def train():
 
                             env_game = create_env()
 
-                            # СМЕНА РОЛЕЙ 
+                            # Смена ролей
                             if round_num < GAMES_PER_PAIR // 2:
                                 agent_model = m1
                                 opponent_model = m2
@@ -331,6 +436,10 @@ def train():
                             env_game.set_opponent(opponent_model)
 
                             obs, info = env_game.reset()
+
+                            # ВАЖНО!!!!!!!!!!!!!!!!! сохраняем сразу после reset
+                            agent_player = int(env_game.env.agentPlayer)
+
                             done = False
 
                             while not done:
@@ -339,13 +448,11 @@ def train():
                                 action, _ = agent_model.predict(
                                     obs,
                                     action_masks=action_masks,
-                                    deterministic=True
+                                    deterministic=False
                                 )
 
                                 obs, reward, terminated, truncated, info = env_game.step(action)
                                 done = terminated or truncated
-
-                            agent_player = int(env_game.env.agentPlayer)
 
                             p1 = info.get("player1_score", 0)
                             p2 = info.get("player2_score", 0)
@@ -369,17 +476,30 @@ def train():
                             else:
                                 score1 = 1.0 - agent_result if agent_result != 0.5 else 0.5
 
-                            # Обновление ELO
-                            elo1 = elo_ratings[m1]
-                            elo2 = elo_ratings[m2]
-                            expected1 = 1 / (1 + 10 ** ((elo2 - elo1) / 400.0))
-
-                            elo_ratings[m1] = elo1 + K * (score1 - expected1)
-                            elo_ratings[m2] = elo2 + K * ((1 - score1) - (1 - expected1))
-
                             # Логируем результат каждой игры
                             name1 = model_names[m1]
                             name2 = model_names[m2]
+
+                            # Обновление ELO
+
+                            old_elo1 = elo_ratings[m1]
+                            old_elo2 = elo_ratings[m2]
+
+                            expected1 = 1 / (1 + 10 ** ((old_elo2 - old_elo1) / 400.0))
+
+                            new_elo1 = old_elo1 + K * (score1 - expected1)
+                            new_elo2 = old_elo2 + K * ((1 - score1) - (1 - expected1))
+
+                            elo_ratings[m1] = new_elo1
+                            elo_ratings[m2] = new_elo2
+
+                            elo_match_log.write(
+                                f"{name1} vs {name2} | "
+                                f"score={score1:.1f} | "
+                                f"exp={expected1:.2f} | "
+                                f"{old_elo1:.0f}->{new_elo1:.0f} | "
+                                f"{old_elo2:.0f}->{new_elo2:.0f}\n"
+                            )
                             result_line = f"Round {round_num+1} | {name1} vs {name2} | {'Win' if score1 == 1 else 'Loss' if score1 == 0 else 'Draw'}"
                             tournament_log.append(result_line)
                             
@@ -401,7 +521,7 @@ def train():
 
                 tournament_time = time.time() - tournament_start
 
-                # ФОРМИРОВАНИЕ ПУЛА 
+                # ==================== ФОРМИРОВАНИЕ ПУЛА ====================
                 # 6 лучших по ELO
                 sorted_by_elo = sorted(current_pool, key=lambda m: elo_ratings[m], reverse=True)
                 new_pool = list(sorted_by_elo[:6])
@@ -414,7 +534,7 @@ def train():
                 
                 
                 # мягкое обновление весов
-                tau = 0.4
+                tau = 0.15
 
                 for param, w_param in zip(model.policy.parameters(), winner.policy.parameters()):
                     param.data.copy_((1 - tau) * param.data + tau * w_param.data)
@@ -439,8 +559,8 @@ def train():
                         continue
 
                     leader_winrates[opponent_name] = winrate
-                # 2 самые проблемные
-                problematic = sorted(leader_winrates.items(), key=lambda x: x[1])[:2]
+                # 4 самые проблемные
+                problematic = sorted(leader_winrates.items(), key=lambda x: x[1])[:4]
                 problematic = [p[0] for p in problematic]
                 problematic_models = []
 
@@ -456,13 +576,13 @@ def train():
                             if m not in new_pool:
                                 new_pool.append(m)
 
-                # Дополняем случайными старыми до 10
+                # Дополняем случайными старыми до 12
                 existing_names = set(model_names[m] for m in new_pool)
 
                 attempts = 0
                 max_attempts = 50
 
-                while len(new_pool) < MAX_POOL_SIZE and attempts < max_attempts:
+                while len(new_pool) < MAX_POOL_SIZE - 1 and attempts < max_attempts:
 
                     random_old, random_name = load_random_old_model(
                         models_dir,
@@ -483,7 +603,7 @@ def train():
 
                 pool_models = new_pool
                 
-                # ОЧИСТКА НЕИСПОЛЬЗУЕМЫХ МОДЕЛЕЙ 
+                # Очистка неиспользуемых моделей
 
                 models_to_keep = set(pool_models)
 
@@ -492,13 +612,13 @@ def train():
 
                     if model_ref not in models_to_keep:
                         del historical_models[ep]
-                        # del model_ref
+                        del model_ref
 
                 gc.collect()
                 torch.cuda.empty_cache()
                 
                 
-                # ЛОГ РЕЗУЛЬТАТОВ ПАР 
+                # Лог результатов пар
 
                 pairwise_log.write(f"\n=== ТУРНИР после эпизода {episode} ===\n")
 
@@ -518,7 +638,7 @@ def train():
                 pairwise_log.write("=" * 90 + "\n\n")
                 pairwise_log.flush()
 
-                # ЗАПИСЬ В ЛОГ 
+                # Запись в лог
                 custom_log.write(f"\n=== ТУРНИР после эпизода {episode} ===\n")
                 custom_log.write(f"Время турнира: {tournament_time:.1f} секунд\n")
 
@@ -534,6 +654,8 @@ def train():
                 custom_log.write("="*90 + "\n\n")
                 custom_log.flush()
 
+                elo_match_log.close()
+                
                 print(f"Турнир завершён за {tournament_time:.1f} сек.")
 
             # Запись progress
